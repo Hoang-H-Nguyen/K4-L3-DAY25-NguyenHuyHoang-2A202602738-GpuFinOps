@@ -3,17 +3,18 @@ from __future__ import annotations
 
 
 def build_report(baseline_usd: float, optimized_usd: float, levers: dict,
-                 sustainability: dict | None = None, period: str = "monthly") -> str:
+                 sustainability: dict | None = None, period: str = "monthly",
+                 extra_sections: list[str] | None = None) -> str:
     """Return a markdown cost-optimization report."""
     savings = baseline_usd - optimized_usd
     pct = (savings / baseline_usd * 100.0) if baseline_usd > 0 else 0.0
     lines = [
         "# NimbusAI — GPU Cost Optimization Report",
         "",
-        f"**Period:** {period}  ",
-        f"**Baseline spend:** ${baseline_usd:,.0f}  ",
-        f"**Optimized spend:** ${optimized_usd:,.0f}  ",
-        f"**Projected savings:** ${savings:,.0f}  (**{pct:.0f}%**)",
+        f"- **Period:** {period}",
+        f"- **Baseline spend:** ${baseline_usd:,.0f}",
+        f"- **Optimized spend:** ${optimized_usd:,.0f}",
+        f"- **Projected savings:** ${savings:,.0f} (**{pct:.0f}%**)",
         "",
         "## Savings by lever",
         "",
@@ -31,6 +32,9 @@ def build_report(baseline_usd: float, optimized_usd: float, levers: dict,
             f"- Carbon per query: {sustainability.get('carbon_g', 0):.3f} gCO2e",
             f"- Cheapest+cleanest region: {sustainability.get('best_region', 'n/a')}",
         ]
+    if extra_sections:
+        for section in extra_sections:
+            lines += ["", section]
     lines += ["", "_Figures are June-2026 as-of snapshots; re-baseline before acting._"]
     return "\n".join(lines)
 

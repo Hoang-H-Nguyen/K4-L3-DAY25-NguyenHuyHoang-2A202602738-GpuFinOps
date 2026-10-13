@@ -15,7 +15,7 @@ def run(verbose: bool = True) -> dict:
     cat = catalog_by_type()
 
     # per-row MFU/MBU, then aggregate per GPU
-    agg = defaultdict(lambda: {"util": [], "mfu": [], "mbu": [], "type": None, "idle_hours": 0})
+    agg = defaultdict(lambda: {"util": [], "mfu": [], "mbu": [], "bw": [], "type": None, "idle_hours": 0})
     for r in tel:
         gtype = r["gpu_type"]
         peak_fp16 = num(cat[gtype]["peak_tflops_fp16"])
@@ -27,6 +27,7 @@ def run(verbose: bool = True) -> dict:
         a["util"].append(num(r["gpu_util_pct"]))
         a["mfu"].append(mfu)
         a["mbu"].append(mbu)
+        a["bw"].append(num(r["achieved_bw_tbs"]))
         if num(r["gpu_util_pct"]) < 10:  # effectively idle this interval (1h)
             a["idle_hours"] += 1
 
@@ -37,6 +38,7 @@ def run(verbose: bool = True) -> dict:
             "gpu_util_pct": round(sum(a["util"]) / len(a["util"]), 1),
             "mfu": round(sum(a["mfu"]) / len(a["mfu"]), 3),
             "mbu": round(sum(a["mbu"]) / len(a["mbu"]), 3),
+            "achieved_bw_tbs": round(sum(a["bw"]) / len(a["bw"]), 3),
             "idle_hours": a["idle_hours"],
         })
 
@@ -46,6 +48,29 @@ def run(verbose: bool = True) -> dict:
         on_demand = num(catalog_by_type()[s["gpu_type"]]["on_demand_hr"])
         idle_waste += metrics.idle_waste_usd(s["idle_hours"], on_demand)
 
+    # Extension 2: for low-MBU GPUs, choose the cheapest device that preserves
+    # HBM capacity and can sustain the workload's observed bandwidth.
+    rightsizing = []
+    for s in summary:
+        if s["mbu"] >= 0.35:
+            continue
+        current = cat[s["gpu_type"]]
+        candidates = [
+            c for c in cat.values()
+            if num(c["hbm_gb"]) >= num(current["hbm_gb"])
+            and num(c["peak_bw_tbs"]) >= s["achieved_bw_tbs"]
+            and num(c["on_demand_hr"]) < num(current["on_demand_hr"])
+        ]
+        if not candidates:
+            continue
+        target = min(candidates, key=lambda c: num(c["on_demand_hr"]))
+        monthly = (num(current["on_demand_hr"]) - num(target["on_demand_hr"])) * 24 * 30
+        rightsizing.append({
+            "gpu_id": s["gpu_id"], "current": s["gpu_type"], "recommended": target["gpu_type"],
+            "mbu": s["mbu"], "hbm_gb": int(num(current["hbm_gb"])),
+            "required_bw_tbs": s["achieved_bw_tbs"], "monthly_savings": round(monthly),
+        })
+
     if verbose:
         print("== M1 Efficiency Audit ==")
         print(f"{'GPU':14}{'type':7}{'util%':>7}{'MFU':>7}{'MBU':>7}{'idle_h':>8}")
@@ -53,8 +78,14 @@ def run(verbose: bool = True) -> dict:
             print(f"{s['gpu_id']:14}{s['gpu_type']:7}{s['gpu_util_pct']:>7}{s['mfu']:>7}{s['mbu']:>7}{s['idle_hours']:>8}")
         print(f"\nGPU-Util LIES (util>=90% but MFU<30%): {[l['gpu_id'] for l in lies]}")
         print(f"Idle waste (1 day): ${idle_waste:,.2f}  ->  ${idle_waste*30:,.0f}/month")
+        print("\nRight-sizing candidates (MBU < 35%, same-or-more HBM):")
+        for r in rightsizing:
+            print(f"  {r['gpu_id']}: {r['current']} -> {r['recommended']}  "
+                  f"(MBU {r['mbu']:.1%}, ${r['monthly_savings']:,}/month saved)")
 
-    return {"summary": summary, "lies": lies, "idle_waste_daily": round(idle_waste, 2)}
+    return {"summary": summary, "lies": lies, "idle_waste_daily": round(idle_waste, 2),
+            "rightsizing": rightsizing,
+            "rightsizing_monthly": sum(r["monthly_savings"] for r in rightsizing)}
 
 
 if __name__ == "__main__":
